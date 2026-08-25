@@ -146,6 +146,66 @@ def wait_for_verdict(before_id: str | None, timeout_s: float = 8.0) -> dict | No
     return None
 
 
+# Which of the three signals each rule belongs to, and what it means in English.
+# Keyed on policy_ref (the rule id the audit row carries).
+RULE_EXPLAIN = {
+    "block-high-confidence-threat": (
+        "🎯 Threat similarity",
+        "Near-exact match to a catalogued attack pattern (≥0.90 cosine similarity "
+        "against the 105-pattern index). Rejected at the proxy — **OpenAI was never "
+        "called, so this attack cost zero tokens.**",
+    ),
+    "flag-mid-confidence-threat": (
+        "🎯 Threat similarity",
+        "Resembles a known attack pattern (0.75–0.89) but not closely enough to block "
+        "outright. Forwarded, and recorded for human review.",
+    ),
+    "tag-low-confidence-threat": (
+        "🎯 Threat similarity",
+        "A faint echo of a known pattern (0.60–0.74). Allowed, but tagged so it shows "
+        "up in monitoring if a pattern develops across a session.",
+    ),
+    "flag-out-of-scope-intent": (
+        "🧭 Intent scope",
+        "Septa could not confidently place this prompt inside the set of intents this "
+        "agent is authorized for, so it flagged it for review. **This tenant has not "
+        "configured its intent vocabulary yet — that's an onboarding step.** Until it "
+        "does, anything Septa can't confidently place is treated as out-of-scope. "
+        "Conservative by default; you tune it to your domain.",
+    ),
+    "block-unauthorized-tool": (
+        "🧭 Intent scope",
+        "The agent requested a tool outside its authorized list.",
+    ),
+    "default-allow": (
+        "✅ No rule matched",
+        "Low threat signal, intent in scope, no behavioural drift. Forwarded normally — "
+        "allowed is not the absence of inspection, it's inspection that passed.",
+    ),
+}
+
+
+def explain_verdict(event: dict) -> tuple[str, str] | None:
+    """Plain-English 'why did this happen', derived from the rule that decided it.
+
+    Falls back to the drift signal, which is not a policy rule — it is an
+    independent check that escalates a would-be ALLOW to FLAG, and it identifies
+    itself in the reasoning text rather than in policy_ref.
+    """
+    rule = (event.get("policy_ref") or "").strip()
+    if rule in RULE_EXPLAIN:
+        return RULE_EXPLAIN[rule]
+    reasoning = (event.get("reasoning") or "").lower()
+    if "diverge" in reasoning or "intent domain" in reasoning:
+        return (
+            "📈 Behavioural drift",
+            "This prompt sits outside the intent domain the agent was registered for. "
+            "A third, independent check — it escalates a would-be ALLOW to FLAG, and "
+            "fires regardless of how low the threat score is.",
+        )
+    return None
+
+
 def render_verdict(event: dict | None, blocked: bool) -> None:
     if blocked:
         st.error("🔴 **BLOCKED — HTTP 451**")
@@ -174,6 +234,27 @@ def render_verdict(event: dict | None, blocked: bool) -> None:
         st.error(line)
     if event.get("reasoning"):
         st.caption(event["reasoning"])
+
+    # ── Why did this happen? ────────────────────────────────────────────────
+    explained = explain_verdict(event)
+    if explained:
+        signal, why = explained
+        with st.expander(f"Why? — {signal}"):
+            st.markdown(why)
+            # The tell that separates the two signals: a LOW threat score next to a
+            # FLAG means it was scope, not threat. Worth pointing at explicitly.
+            if (
+                disp in ("FLAG", "TAG")
+                and isinstance(score, (int, float))
+                and score < 0.60
+                and "scope" in signal.lower()
+            ):
+                st.info(
+                    f"**Note the score: {score:.4f}.** That is inside the ALLOW band on "
+                    "threat similarity — this prompt is not dangerous. It flagged on "
+                    "*scope*, not on *threat*. Two independent signals, recorded "
+                    "separately."
+                )
 
 
 # ---------------------------------------------------------------------------
