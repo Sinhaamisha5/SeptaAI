@@ -23,6 +23,7 @@ WHAT THIS SHOWS
 """
 
 import json
+import re
 import os
 import time
 import uuid
@@ -129,6 +130,22 @@ CONVERSIONS = {
 _ARITHMETIC_CHARS = set("0123456789+-*/(). ")
 
 
+def _strip_units(expression: str) -> str:
+    """Drop unit annotations the model likes to write into expressions.
+
+    GPT frequently emits '500 rows/second * 3600 seconds/hour' rather than
+    '500 * 3600'. A bare character whitelist rejects that, the tool returns an
+    error, and the agent burns a visible retry step on stage. Strip unit RATES
+    first (word/word) so the '/' that belongs to the unit goes with it, then any
+    remaining bare words.
+    """
+    # 'rows/second', 'seconds / hour' -> removed entirely, slash included
+    expression = re.sub(r"[A-Za-z]+\s*/\s*[A-Za-z]+", " ", expression)
+    # leftover bare units: '30 kg', '5 items'
+    expression = re.sub(r"[A-Za-z_]+", " ", expression)
+    return expression
+
+
 def _safe_eval(expression: str) -> str:
     """Arithmetic only.
 
@@ -137,13 +154,17 @@ def _safe_eval(expression: str) -> str:
     for an injected payload to reach. Emptied __builtins__ is belt-and-braces.
     The original demo used a bare eval() with `math` in scope — fine in practice,
     but a security product should not show eval() on a projector.
+
+    Note the ordering: units are stripped BEFORE the whitelist check, so the
+    whitelist still governs what actually reaches eval().
     """
-    if not set(expression) <= _ARITHMETIC_CHARS:
-        return "Error: expression contains unsupported characters"
+    cleaned = expression if set(expression) <= _ARITHMETIC_CHARS else _strip_units(expression)
+    if not set(cleaned) <= _ARITHMETIC_CHARS or not cleaned.strip():
+        return f"Cannot evaluate '{expression}' — arithmetic expressions only."
     try:
-        return str(eval(compile(expression, "<calc>", "eval"), {"__builtins__": {}}, {}))
-    except Exception as exc:  # noqa: BLE001 — demo tool, surface the message
-        return f"Error: {exc}"
+        return str(eval(compile(cleaned, "<calc>", "eval"), {"__builtins__": {}}, {}))
+    except Exception:
+        return f"Cannot evaluate '{expression}' — arithmetic expressions only."
 
 
 def run_tool(name: str, args: dict) -> str:
@@ -182,12 +203,32 @@ def get_client(session_id: str) -> OpenAI:
 
 @st.cache_data(ttl=5)
 def fetch_risk() -> dict:
+    """Fresh risk profile for the agent.
+
+    TWO THINGS THIS GETS RIGHT, both learned the hard way:
+
+    1. The path is /v1/risk/agents/{id} (risk_intel.py:108), NOT
+       /v1/agents/{id}/risk — the latter 404s, which is what "Risk profile
+       unavailable" was.
+
+    2. GET returns the PRECOMPUTED row from the risk_profiles table, written by
+       a background worker. During a demo that value is stale, so the score
+       would sit frozen no matter how many blocks you triggered. POST
+       /v1/risk/recompute?agent_id=... computes synchronously and upserts, so we
+       call that FIRST and fall back to the GET only if it fails.
+    """
+    hdr = {"Authorization": f"Bearer {SEPTA_API_KEY}"}
     try:
-        r = requests.get(
-            f"{API_URL}/v1/agents/{AGENT_ID}/risk",
-            headers={"Authorization": f"Bearer {SEPTA_API_KEY}"},
-            timeout=10,
+        r = requests.post(
+            f"{API_URL}/v1/risk/recompute",
+            params={"agent_id": AGENT_ID}, headers=hdr, timeout=20,
         )
+        if r.ok:
+            return r.json()
+    except Exception:
+        pass
+    try:
+        r = requests.get(f"{API_URL}/v1/risk/agents/{AGENT_ID}", headers=hdr, timeout=10)
         return r.json() if r.ok else {}
     except Exception:
         return {}
