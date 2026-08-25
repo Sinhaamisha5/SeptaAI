@@ -1,2 +1,5 @@
 .env
 __pycache__/
+venv/
+streamlit*.log
+DEMO_RUNBOOK.md
