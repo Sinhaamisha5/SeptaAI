@@ -278,6 +278,14 @@ def fetch_recent_events(limit: int = 10) -> list:
         return []
 
 
+# Audit event_type -> the stage name the dashboard shows.
+EVENT_TYPE_LABEL = {
+    "input_inspection": "Input Inspection",
+    "output_inspection": "Output Inspection",
+    "tool_scope": "Tool Scope",
+    "governance_denied": "Governance",
+}
+
 DISPOSITION_STYLE = {
     "BLOCK": ("🔴", "error"),
     "FLAG": ("🟠", "warning"),
@@ -332,7 +340,7 @@ def render_verdicts(container, events: list) -> list:
     """Render what Septa actually decided. Returns the dispositions seen."""
     seen = []
     with container:
-        st.markdown("##### Input inspection — what Septa recorded per call")
+        st.markdown("##### What Septa recorded")
         if not events:
             st.caption(
                 "No new audit events yet — the writer batches on a short interval. "
@@ -345,7 +353,16 @@ def render_verdicts(container, events: list) -> list:
             icon, _ = DISPOSITION_STYLE.get(disp, ("⚪", "info"))
             score = e.get("risk_score")
             score_txt = f"score {score:.4f}" if isinstance(score, (int, float)) else "score —"
-            st.markdown(f"{icon} **{disp}** · {score_txt} · `{e.get('policy_ref') or '—'}`")
+            # Name the stage. A tool_scope BLOCK and an input_inspection FLAG can
+            # both land for one request — they are different legs, not a conflict,
+            # and the audit dashboard distinguishes them the same way.
+            stage = EVENT_TYPE_LABEL.get(
+                str(e.get("event_type") or "").lower(),
+                str(e.get("event_type") or "event").replace("_", " ").title(),
+            )
+            st.markdown(
+                f"{icon} **{disp}** · {stage} · {score_txt} · `{e.get('policy_ref') or '—'}`"
+            )
             if e.get("reasoning"):
                 st.caption(e["reasoning"])
     return seen
