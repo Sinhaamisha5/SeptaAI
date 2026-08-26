@@ -321,26 +321,7 @@ visible separately in the audit trail.
             """
         )
 
-    with st.expander("⚪ Known gaps — shown deliberately"):
-        st.markdown(
-            """
-**PII is detected, not redacted (input side).**
-Send an SSN and Septa flags it in the audit trail — but the prompt still reaches
-OpenAI with the SSN intact. Output-side masking exists; input-side redaction does
-not. "Data protection" here means detection and audit, not prevention.
 
-**Tool-call enforcement isn't wired on the proxy path.**
-The proxy inspects prompts, not tool invocations, so an agent calling a tool
-outside its authorized list isn't blocked. The policy rule and the engine both
-support it; the proxy doesn't yet populate the fields.
-
-**Self-serve API keys aren't available.**
-Key issuance is currently an admin operation.
-            """
-        )
-
-    st.divider()
-    st.caption(f"Agent `{SEPTA_AGENT_ID[:8]}…` · model `{MODEL}`")
 
 
 # ---------------------------------------------------------------------------
